@@ -33,6 +33,8 @@ def home():
         "version": "1.0.0",
         "endpoints": {
             "users": "/users",
+            "emails": "/users/emails",
+            "clear_all": "/users/clear",
             "swagger_ui": "/swagger",
             "api_docs": "/static/swagger.json"
         },
@@ -41,7 +43,9 @@ def home():
             "POST /users": "Create a new user",
             "GET /users/<id>": "Get user by ID",
             "PUT /users/<id>": "Update user by ID",
-            "DELETE /users/<id>": "Delete user by ID"
+            "DELETE /users/<id>": "Delete user by ID",
+            "GET /users/emails": "Get all existing emails",
+            "DELETE /users/clear": "Clear all users (for testing)"
         }
     })
 
@@ -50,6 +54,21 @@ def home():
 def create_user():
     try:
         data = request.json
+        
+        # Validate required fields
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+        
+        if not data.get('user_email'):
+            return jsonify({"error": "user_email is required"}), 400
+        
+        if not data.get('user_name'):
+            return jsonify({"error": "user_name is required"}), 400
+        
+        # Check if email already exists
+        existing_user = User.query.filter_by(user_email=data['user_email']).first()
+        if existing_user:
+            return jsonify({"error": f"User with email '{data['user_email']}' already exists"}), 400
         
         # Handle date conversion if provided
         if 'user_date_of_birth' in data and data['user_date_of_birth']:
@@ -64,11 +83,26 @@ def create_user():
         user = User(**data)
         db.session.add(user)
         db.session.commit()
-        return jsonify({"message": "User created!", "user_id": user.user_id}), 201
+        
+        # Return the created user data
+        user_schema = UserSchema()
+        return jsonify({
+            "message": "User created successfully!", 
+            "user_id": user.user_id,
+            "user": user_schema.dump(user)
+        }), 201
     
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": str(e)}), 400
+        error_msg = str(e)
+        
+        # Handle specific database errors
+        if "UNIQUE constraint failed: users.user_email" in error_msg:
+            return jsonify({"error": "Email address already exists. Please use a different email."}), 400
+        elif "NOT NULL constraint failed" in error_msg:
+            return jsonify({"error": "Required field is missing. Please check user_name and user_email."}), 400
+        else:
+            return jsonify({"error": f"Database error: {error_msg}"}), 400
 
 @app.route('/users', methods=['GET'])
 def get_users():
@@ -113,6 +147,32 @@ def delete_user(user_id):
     db.session.delete(user)
     db.session.commit()
     return jsonify({"message": "User deleted!"})
+
+# Helper routes
+@app.route('/users/emails', methods=['GET'])
+def get_existing_emails():
+    """Get all existing email addresses"""
+    users = User.query.with_entities(User.user_email, User.user_name, User.user_id).all()
+    emails = [{"user_id": user.user_id, "user_name": user.user_name, "user_email": user.user_email} for user in users]
+    return jsonify({
+        "existing_emails": emails,
+        "count": len(emails)
+    })
+
+@app.route('/users/clear', methods=['DELETE'])
+def clear_all_users():
+    """Clear all users from database (for testing)"""
+    try:
+        count = User.query.count()
+        User.query.delete()
+        db.session.commit()
+        return jsonify({
+            "message": f"All {count} users have been deleted from the database",
+            "deleted_count": count
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 400
 
 if __name__ == '__main__':
     with app.app_context():
